@@ -1,0 +1,40 @@
+:root {
+  /* Walnut Brown - Primary Brand */
+  --primary: #6F4E37;
+  /* Brass Gold - Secondary Accent */
+  --accent: #C9A44C;
+  /* Terracotta - Alert, Sale */
+  --alert: #C1502E;
+  /* Sage Green - Success */
+  --success: #7A8B69;
+  /* Warm Ivory - Background Light */
+  --bg-main: #FAF6F0;
+  /* Soft Linen - Background Section */
+  --bg-section: #F0EAE1;
+  /* Charcoal Oak - Text Primary */
+  --text-main: #2E2A26;
+  /* Taupe Gray - Text Secondary */
+  --text-muted: #7D7468;
+  /* Mushroom Beige - Borders */
+  --border-color: #DCD3C4;
+  /* Espresso - Dark Mode Base / Footer */
+  --bg-dark: #1E1A16;
+
+  --font-heading: 'Fraunces', serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-main);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  color: var(--text-main);
+}

@@ -1,0 +1,6 @@
+from recommenders.popularity import popularity_recommender, PopularityRecommender
+from recommenders.svd import svd_recommender, SVDRecommender
+from recommenders.collaborative import cf_recommender, CollaborativeFilteringRecommender
+from recommenders.content_based import content_recommender, ContentBasedRecommender
+from recommenders.location_aware import location_recommender, LocationAwareRecommender
+from recommenders.hybrid_recommender import hybrid_recommender, HybridRecommender
