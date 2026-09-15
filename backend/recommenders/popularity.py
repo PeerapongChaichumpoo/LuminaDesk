@@ -39,9 +39,14 @@ class PopularityRecommender:
 
         # Calculate normalized popularity score [0, 1]
         pop_df['popularity_score'] = (pop_df['total_quantity'] / max_qty).round(4)
-        pop_df = pop_df.sort_values(by='popularity_score', ascending=False)
+        pop_df = pop_df.sort_values(by=['total_quantity', 'sales_count'], ascending=[False, False])
 
-        self.popular_items = pop_df.to_dict(orient="records")
+        records = pop_df.to_dict(orient="records")
+        for idx, item in enumerate(records, 1):
+            item["sales_rank"] = idx
+
+        self.popular_items = records
+        self.lookup_dict = {str(item["ProductKey"]): item for item in records}
         save_cache("popularity_model", {"popular_items": self.popular_items})
 
     def get_recommendations(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -49,7 +54,7 @@ class PopularityRecommender:
             return []
         
         recs = []
-        for item in self.popular_items[:limit]:
+        for idx, item in enumerate(self.popular_items[:limit], 1):
             recs.append({
                 "ProductKey": str(item["ProductKey"]),
                 "ProductName": item["ProductName"],
@@ -58,6 +63,7 @@ class PopularityRecommender:
                 "UnitPrice": float(item["UnitPrice"]),
                 "total_quantity": int(item["total_quantity"]),
                 "sales_count": int(item["sales_count"]),
+                "sales_rank": int(item.get("sales_rank", idx)),
                 "score": float(item["popularity_score"])
             })
         return recs

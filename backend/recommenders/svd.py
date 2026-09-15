@@ -130,15 +130,24 @@ class SVDRecommender:
         top_indices = np.argsort(similarities)[::-1]
 
         recs = []
+        seen_names = set()
+        target_name = self.df_ref[self.df_ref['ProductKey'].astype(str) == str_pk].iloc[0]["ProductName"]
+        if target_name:
+            seen_names.add(str(target_name).strip().lower())
+
         for idx in top_indices:
             if len(recs) >= limit:
                 break
             sim_key = self.item_inv_mapper[idx]
             if sim_key != str_pk:
                 prod_info = self.df_ref[self.df_ref['ProductKey'].astype(str) == sim_key].iloc[0]
+                p_name = str(prod_info["ProductName"]).strip()
+                if p_name.lower() in seen_names:
+                    continue
+                seen_names.add(p_name.lower())
                 recs.append({
                     "ProductKey": sim_key,
-                    "ProductName": prod_info["ProductName"],
+                    "ProductName": p_name,
                     "CategoryName": prod_info["CategoryName"],
                     "SubcategoryName": prod_info["SubcategoryName"],
                     "UnitPrice": float(prod_info["UnitPrice"]),

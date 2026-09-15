@@ -922,5 +922,106 @@ body {
 .cursor-pointer { cursor: pointer !important; }
 .m-0 { margin: 0 !important; }
 
+/* Recommendation Driver Badges & Breakdown */
+.badge-item-cf {
+  background: #10B981 !important;
+  color: #FFF !important;
+}
+.badge-svd {
+  background: var(--accent) !important;
+  color: #0F172A !important;
+}
+.badge-user-cf {
+  background: #3B82F6 !important;
+  color: #FFF !important;
+}
+.badge-content {
+  background: #F59E0B !important;
+  color: #FFF !important;
+}
+.badge-loc {
+  background: #EC4899 !important;
+  color: #FFF !important;
+}
+
+.weight-tuning-panel input[type="range"] {
+  cursor: pointer;
+}
+
+/* Executive Preset Chips & Slider Cards */
+.preset-chip {
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  padding: 0.35rem 0.85rem;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.preset-chip:hover {
+  background: var(--bg-section);
+  color: var(--primary);
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.preset-chip.active {
+  background: var(--primary);
+  color: #FFF;
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(111, 78, 55, 0.2);
+}
+
+.slider-card {
+  transition: all 0.25s ease;
+}
+
+.slider-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.04);
+  border-color: var(--accent) !important;
+}
+
+/* Styled Range Sliders */
+.styled-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-section);
+  outline: none;
+  transition: background 0.2s;
+  cursor: pointer;
+}
+
+.styled-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #FFF;
+  border: 2px solid var(--primary);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.styled-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.svd-slider::-webkit-slider-thumb { border-color: var(--accent); }
+.item-cf-slider::-webkit-slider-thumb { border-color: #10B981; }
+.user-cf-slider::-webkit-slider-thumb { border-color: #3B82F6; }
+.content-slider::-webkit-slider-thumb { border-color: #F59E0B; }
+.loc-slider::-webkit-slider-thumb { border-color: #EC4899; }
+
+
+
 
 

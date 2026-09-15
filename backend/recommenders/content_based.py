@@ -70,15 +70,24 @@ class ContentBasedRecommender:
         sorted_indices = np.argsort(similarities)[::-1]
 
         recs = []
+        seen_names = set()
+        target_row = self.df_ref.iloc[target_idx]
+        if "ProductName" in target_row:
+            seen_names.add(str(target_row["ProductName"]).strip().lower())
+
         for idx in sorted_indices:
             if len(recs) >= limit:
                 break
             candidate_key = self.item_inv_mapper[idx]
             if candidate_key != str_key:
                 row = self.df_ref.iloc[idx]
+                p_name = str(row["ProductName"]).strip()
+                if p_name.lower() in seen_names:
+                    continue
+                seen_names.add(p_name.lower())
                 recs.append({
                     "ProductKey": candidate_key,
-                    "ProductName": row["ProductName"],
+                    "ProductName": p_name,
                     "CategoryName": row["CategoryName"],
                     "SubcategoryName": row["SubcategoryName"],
                     "UnitPrice": float(row["UnitPrice"]),

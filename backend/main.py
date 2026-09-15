@@ -12,6 +12,7 @@ import datetime
 from recommenders.popularity import popularity_recommender
 from recommenders.svd import svd_recommender
 from recommenders.collaborative import cf_recommender
+from recommenders.item_collaborative import item_cf_recommender
 from recommenders.content_based import content_recommender
 from recommenders.location_aware import location_recommender
 from recommenders.hybrid_recommender import hybrid_recommender
@@ -203,12 +204,38 @@ def enrich_product(record: dict) -> dict:
         res["score"] = record["hybrid_score"]
     if "similarity_score" in record:
         res["similarityScore"] = record["similarity_score"]
+    if "similarity" in record:
+        res["similarity"] = record["similarity"]
+        res["similarityScore"] = record["similarity"]
+    if "svd_score" in record:
+        res["svdScore"] = record["svd_score"]
+    if "user_cf_score" in record:
+        res["userCfScore"] = record["user_cf_score"]
+    if "item_cf_score" in record:
+        res["itemCfScore"] = record["item_cf_score"]
+    if "content_score" in record:
+        res["contentScore"] = record["content_score"]
+    if "loc_score" in record:
+        res["locScore"] = record["loc_score"]
     if "location" in record:
         res["location"] = record["location"]
-    if "total_quantity" in record:
-        res["total_quantity"] = record["total_quantity"]
-    if "sales_count" in record:
-        res["sales_count"] = record["sales_count"]
+    
+    prod_key = str(record.get("ProductKey", ""))
+    pop_lookup = getattr(popularity_recommender, "lookup_dict", {})
+    pop_info = pop_lookup.get(prod_key)
+
+    total_qty = record.get("total_quantity") or (pop_info.get("total_quantity") if pop_info else None)
+    sales_cnt = record.get("sales_count") or (pop_info.get("sales_count") if pop_info else None)
+    sales_rnk = record.get("sales_rank") or (pop_info.get("sales_rank") if pop_info else None)
+
+    if total_qty is not None:
+        res["total_quantity"] = int(total_qty)
+        res["totalQuantity"] = int(total_qty)
+    if sales_cnt is not None:
+        res["sales_count"] = int(sales_cnt)
+        res["salesCount"] = int(sales_cnt)
+    if sales_rnk is not None:
+        res["salesRank"] = int(sales_rnk)
     return res
 
 @app.on_event("startup")
@@ -239,7 +266,7 @@ def load_data():
         print(f"  -> Dataset loaded in {round(time.time()-t0, 3)}s ({len(df)} rows)")
 
         t1 = time.time()
-        print("Fitting Modular Hybrid Recommenders (Popularity, SVD, CF, Content, Location)...")
+        print("Fitting Modular Hybrid Recommenders (Popularity, SVD, User-CF, Item-CF, Content, Location)...")
         hybrid_recommender.fit(df)
         print(f"  -> All models fitted in {round(time.time()-t1, 3)}s")
 
@@ -264,14 +291,28 @@ def get_products(limit: int = 10000):
 @app.get("/api/products/recommendations/{customer_key}")
 def get_recommendations_endpoint(
     customer_key: str,
-    location: Optional[str] = Query("California")
+    location: Optional[str] = Query("California"),
+    w_svd: Optional[float] = Query(None),
+    w_user_cf: Optional[float] = Query(None),
+    w_item_cf: Optional[float] = Query(None),
+    w_content: Optional[float] = Query(None),
+    w_loc: Optional[float] = Query(None)
 ):
     """
     Modular Hybrid Recommendation Endpoint:
     1. Switching Hybrid: Guest -> Popularity Recommender.
-    2. Weighted Hybrid: Returning Customer -> SVD (35%) + CF (25%) + Content (25%) + Location (15%).
+    2. Weighted Hybrid: Returning Customer -> SVD + Item-CF + User-CF + Content + Location (5% default).
     """
-    res = hybrid_recommender.get_recommendations(customer_key, location=location, limit=20)
+    res = hybrid_recommender.get_recommendations(
+        customer_key,
+        location=location,
+        limit=20,
+        w_svd=w_svd,
+        w_user_cf=w_user_cf,
+        w_item_cf=w_item_cf,
+        w_content=w_content,
+        w_loc=w_loc
+    )
     enriched_recs = [enrich_product(r) for r in res.get("recommendations", [])]
     return {
         "type": res.get("hybrid_type", "hybrid"),
@@ -298,6 +339,13 @@ def get_user_collaborative_recommendations(customer_key: int, limit: int = 20):
     raw = cf_recommender.predict_user_based(customer_key, limit=limit)
     return [enrich_product(r) for r in raw]
 
+@app.get("/api/products/item-collaborative/{customer_key}")
+def get_item_collaborative_recommendations(customer_key: int, limit: int = 20):
+    """ Item-Based Collaborative Filtering Recommendations """
+    raw = item_cf_recommender.predict_item_based(customer_key, limit=limit)
+    return [enrich_product(r) for r in raw]
+
+
 @app.get("/api/products/location-aware")
 def get_location_aware_endpoint(location: str = Query("California"), limit: int = 20):
     """ Location-Aware Recommendations """
@@ -306,19 +354,29 @@ def get_location_aware_endpoint(location: str = Query("California"), limit: int 
 
 
 @app.get("/api/products/similar/{product_key}")
-def get_similar_endpoint(product_key: str, limit: int = 5):
+def get_similar_endpoint(product_key: str, limit: int = 5, exclude: Optional[str] = Query(None)):
     """ Content-Based Cosine Similarity recommendation """
     if df.empty: return []
-    raw = content_recommender.get_similar_items(product_key, limit)
-    return [enrich_product(r) for r in raw]
+    exclude_list = [str(x).strip() for x in exclude.split(",")] if exclude else []
+    exclude_list.append(str(product_key))
+    
+    raw = content_recommender.get_similar_items(product_key, limit=limit + len(exclude_list))
+    filtered = [enrich_product(r) for r in raw if str(r["ProductKey"]) not in exclude_list]
+    return filtered[:limit]
 
 @app.get("/api/products/frequently-bought-together/{product_key}")
-def get_fbt_endpoint(product_key: str, limit: int = 4):
+def get_fbt_endpoint(product_key: str, limit: int = 4, exclude: Optional[str] = Query(None)):
     """ SVD Item Factor Cosine Similarity """
-    recs = svd_recommender.get_frequently_bought_together(product_key, limit)
+    exclude_list = [str(x).strip() for x in exclude.split(",")] if exclude else []
+    exclude_list.append(str(product_key))
+    
+    recs = svd_recommender.get_frequently_bought_together(product_key, limit=limit + len(exclude_list))
     if not recs:
-        return popular_cache[:limit]
-    return [enrich_product(r) for r in recs]
+        raw_pop = popularity_recommender.get_recommendations(limit=limit + len(exclude_list))
+        recs = [enrich_product(p) for p in raw_pop]
+
+    filtered = [enrich_product(r) for r in recs if str(r.get("ProductKey")) not in exclude_list]
+    return filtered[:limit]
 
 @app.get("/api/history/{customer_key}")
 def get_user_history(customer_key: int):

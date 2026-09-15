@@ -14,6 +14,15 @@ function App() {
   const [recMessage, setRecMessage] = useState('')
   const [selectedLocation, setSelectedLocation] = useState('')
 
+  // Dynamic Hybrid Weights State (Location default set to 5% - least weighted)
+  const [wSvd, setWSvd] = useState(30)
+  const [wItemCf, setWItemCf] = useState(25)
+  const [wUserCf, setWUserCf] = useState(20)
+  const [wContent, setWContent] = useState(20)
+  const [wLoc, setWLoc] = useState(5)
+  const [isWeightPanelOpen, setIsWeightPanelOpen] = useState(false)
+  const [inspectedProduct, setInspectedProduct] = useState(null)
+
   // Searching and Filtering States
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategories, setSelectedCategories] = useState([])
@@ -121,16 +130,52 @@ function App() {
     setIsCartOpen(true);
     setFbtLoading(true);
     
-    fetch(`http://localhost:8000/api/products/frequently-bought-together/${targetItem.ProductKey}?limit=4`)
+    // Collect all product keys currently in cart to exclude redundant recommendations
+    const cartKeys = cart.map(item => item.ProductKey).concat(targetItem.ProductKey).join(',');
+
+    fetch(`http://localhost:8000/api/products/frequently-bought-together/${targetItem.ProductKey}?limit=10&exclude=${encodeURIComponent(cartKeys)}`)
       .then(res => res.json())
       .then(data => {
-        setFbtItems(data);
+        // Filter out items already in cart, target item, or duplicate product names
+        const existingCartKeys = new Set(cart.map(c => String(c.ProductKey)).concat(String(targetItem.ProductKey)));
+        const existingCartNames = new Set(cart.map(c => String(c.ProductName || '').trim().toLowerCase()).concat(String(targetItem.ProductName || '').trim().toLowerCase()));
+        
+        const uniqueRecs = [];
+        const seenNames = new Set(existingCartNames);
+
+        (data || []).forEach(item => {
+          const itemKey = String(item.ProductKey);
+          const itemName = String(item.ProductName || '').trim().toLowerCase();
+          if (!existingCartKeys.has(itemKey) && itemName && !seenNames.has(itemName)) {
+            seenNames.add(itemName);
+            uniqueRecs.push(item);
+          }
+        });
+
+        setFbtItems(uniqueRecs.slice(0, 4));
         setFbtLoading(false);
       })
       .catch(err => {
         console.error(err);
         setFbtLoading(false);
       });
+  }
+
+  const handleBuyNow = (e, targetItem, qty = 1) => {
+    if (e) e.stopPropagation();
+    setCart(prev => {
+      const existingIdx = prev.findIndex(item => item.ProductKey === targetItem.ProductKey);
+      if (existingIdx > -1) {
+        const copy = [...prev];
+        copy[existingIdx].quantity = (copy[existingIdx].quantity || 1) + qty;
+        return copy;
+      }
+      return [...prev, { ...targetItem, quantity: qty }];
+    });
+
+    setIsCartOpen(false);
+    setCheckoutStep(1);
+    setIsCheckoutOpen(true);
   }
 
   const handleApplyPromo = () => {
@@ -192,9 +237,27 @@ function App() {
     setBulkQuoteSubmitted(false)
     window.scrollTo(0, 0)
     
-    fetch(`http://localhost:8000/api/products/similar/${product.ProductKey}?limit=4`)
+    const cartKeys = cart.map(item => item.ProductKey).concat(product.ProductKey).join(',');
+    fetch(`http://localhost:8000/api/products/similar/${product.ProductKey}?limit=10&exclude=${encodeURIComponent(cartKeys)}`)
       .then(res => res.json())
-      .then(data => setSimilarProducts(data))
+      .then(data => {
+        const existingCartKeys = new Set(cart.map(c => String(c.ProductKey)).concat(String(product.ProductKey)));
+        const existingNames = new Set(cart.map(c => String(c.ProductName || '').toLowerCase().trim()).concat(String(product.ProductName || '').toLowerCase().trim()));
+        
+        const uniqueRecs = [];
+        const seenNames = new Set(existingNames);
+
+        (data || []).forEach(item => {
+          const itemKey = String(item.ProductKey);
+          const itemName = String(item.ProductName || '').trim().toLowerCase();
+          if (!existingCartKeys.has(itemKey) && itemName && !seenNames.has(itemName)) {
+            seenNames.add(itemName);
+            uniqueRecs.push(item);
+          }
+        });
+
+        setSimilarProducts(uniqueRecs.slice(0, 4));
+      })
       .catch(err => console.error(err))
   }
 
@@ -202,6 +265,25 @@ function App() {
     setSelectedProduct(null)
     setSimilarProducts([])
   }
+
+  // Helper to determine primary driver badge for a recommendation
+  const getDriverBadge = (item) => {
+    if (!item) return { label: 'Matched', cls: 'badge-svd', icon: '⚡' };
+    const sSvd = item.svdScore || 0;
+    const sItemCf = item.itemCfScore || 0;
+    const sUserCf = item.userCfScore || 0;
+    const sContent = item.contentScore || 0;
+    const sLoc = item.locScore || 0;
+
+    const maxVal = Math.max(sSvd, sItemCf, sUserCf, sContent, sLoc);
+    if (maxVal === sItemCf && sItemCf > 0) return { label: 'Item Co-Purchase Match', cls: 'badge-item-cf', icon: '🛒' };
+    if (maxVal === sSvd && sSvd > 0) return { label: 'Latent Preference SVD', cls: 'badge-svd', icon: '🧬' };
+    if (maxVal === sUserCf && sUserCf > 0) return { label: 'Peer Customer Pick', cls: 'badge-user-cf', icon: '👥' };
+    if (maxVal === sContent && sContent > 0) return { label: 'Ergonomic & Style Fit', cls: 'badge-content', icon: '📐' };
+    if (maxVal === sLoc && sLoc > 0) return { label: 'Regional Affinity', cls: 'badge-loc', icon: '📍' };
+
+    return { label: 'Hybrid Matched', cls: 'badge-svd', icon: '⚡' };
+  };
 
   // Fetch initial catalog & user data
   useEffect(() => {
@@ -213,7 +295,8 @@ function App() {
       .catch(err => console.error(err))
 
     const userToFetch = (customerKey === 'new' || !customerKey) ? 'guest' : customerKey;
-    fetch(`http://localhost:8000/api/products/recommendations/${userToFetch}?location=${encodeURIComponent(selectedLocation)}`)
+    const weightParams = `&w_svd=${wSvd / 100}&w_user_cf=${wUserCf / 100}&w_item_cf=${wItemCf / 100}&w_content=${wContent / 100}&w_loc=${wLoc / 100}`;
+    fetch(`http://localhost:8000/api/products/recommendations/${userToFetch}?location=${encodeURIComponent(selectedLocation)}${weightParams}`)
       .then(res => res.json())
       .then(data => {
         if(data.detail) return;
@@ -232,7 +315,7 @@ function App() {
       .catch(err => console.error(err))
       
     window.scrollTo(0,0)
-  }, [isLoggedIn, customerKey, selectedLocation])
+  }, [isLoggedIn, customerKey, selectedLocation, wSvd, wUserCf, wItemCf, wContent, wLoc])
 
 
   // Check if any filter is active
@@ -370,26 +453,52 @@ function App() {
     )
   }
 
-  // --- RENDER PRODUCT DETAIL VIEW ---
-  if (selectedProduct) {
-     const images = selectedProduct.images || [selectedProduct.image || `https://picsum.photos/seed/${selectedProduct.ProductKey}/800/500` ];
+  // --- RENDER APPLICATION ---
+  const pdpImages = selectedProduct ? (selectedProduct.images || [selectedProduct.image || `https://picsum.photos/seed/${selectedProduct.ProductKey}/800/500`]) : [];
 
-     return (
-       <div className="app-container">
-        <header className="fixed-header glass">
-            <div className="header-logo" onClick={goBackToStore} style={{cursor: 'pointer'}}>LUMINA WORKSPACE</div>
-            <button onClick={goBackToStore} className="logout-btn glass">&larr; Back to Catalog</button>
-        </header>
+  return (
+    <div className="app-container">
+      <header className="fixed-header glass">
+        <div className="header-logo" onClick={goBackToStore} style={{cursor: 'pointer'}}>LUMINA WORKSPACE</div>
+        
+        <div className="header-actions">
+          {selectedProduct && (
+            <button onClick={goBackToStore} className="logout-btn glass" style={{marginRight: '0.5rem'}}>&larr; Back to Catalog</button>
+          )}
 
+          <button className="btn btn-guest position-relative" style={{background: 'var(--primary)', color: '#FFF', border: 'none', marginRight: '0.5rem'}} onClick={() => setIsCartOpen(true)}>
+             Cart ({cart.reduce((a, b) => a + (b.quantity || 1), 0)})
+          </button>
+
+          <div className="user-display">
+            <div className="avatar">
+              {customerKey === 'new' ? 'G' : 'U'}
+            </div>
+            <div className="user-info-text">
+              <span className="user-name">
+                {customerKey === 'new' ? 'Guest Explorer' : `Customer #${customerKey}`}
+              </span>
+              <span className="user-role">
+                {customerKey === 'new' ? 'Cold-Start Guest' : 'Verified Buyer'}
+              </span>
+            </div>
+          </div>
+
+          <button onClick={handleLogout} className="logout-btn glass">Sign Out</button>
+        </div>
+      </header>
+
+      {/* CONDITIONAL CONTENT VIEW: PRODUCT DETAIL (PDP) OR STOREFRONT */}
+      {selectedProduct ? (
         <div className="detail-layout">
            <div className="detail-main glass">
               
               {/* Gallery Preview & Thumbnails */}
               <div className="detail-hero">
-                <img src={images[activeImageIndex] || images[0]} alt={selectedProduct.ProductName} />
+                <img src={pdpImages[activeImageIndex] || pdpImages[0]} alt={selectedProduct.ProductName} />
               </div>
               <div className="pdp-thumbnails">
-                {images.map((img, idx) => (
+                {pdpImages.map((img, idx) => (
                   <img
                     key={idx}
                     src={img}
@@ -448,9 +557,13 @@ function App() {
                        Add {pdpQuantity} to Cart
                     </button>
                     
-                    <button className="btn btn-guest" style={{background: 'var(--accent)', color: '#FFF', border: 'none'}} onClick={() => { handleAddToCart(null, selectedProduct, pdpQuantity); setIsCheckoutOpen(true); }}>
-                       Buy Now
-                    </button>
+                    <button 
+                        className="btn btn-guest" 
+                        style={{background: 'var(--accent)', color: '#FFF', border: 'none', fontWeight: 'bold'}} 
+                        onClick={(e) => handleBuyNow(e, selectedProduct, pdpQuantity)}
+                     >
+                        Buy Now
+                     </button>
 
                     <button className="btn btn-guest" onClick={() => setIsBulkQuoteOpen(true)}>
                        Request Corporate Bulk Quote (5+ Units)
@@ -515,73 +628,8 @@ function App() {
               }
            </div>
         </div>
-
-        {/* Corporate Bulk Quote Modal */}
-        {isBulkQuoteOpen && (
-           <div className="cart-overlay">
-              <div className="checkout-modal glass p-4 max-w-500 mx-auto mt-5">
-                 <h3>Request Corporate Bulk Quote</h3>
-                 <p style={{fontSize: '0.9rem', color: 'var(--text-muted)'}}>Discounted pricing available for orders of 5+ units for <strong>{selectedProduct.ProductName}</strong>.</p>
-                 {bulkQuoteSubmitted ? (
-                    <div className="alert alert-success mt-3">
-                       Quote request submitted! Our corporate account team will reach out within 2 business hours.
-                       <button className="btn btn-primary mt-3" onClick={() => setIsBulkQuoteOpen(false)}>Close</button>
-                    </div>
-                 ) : (
-                    <form onSubmit={(e) => { e.preventDefault(); setBulkQuoteSubmitted(true); }}>
-                       <div className="form-group mb-2">
-                          <label>Work Email</label>
-                          <input type="email" required className="login-input" placeholder="executive@company.com"/>
-                       </div>
-                       <div className="form-group mb-2">
-                          <label>Quantity Required</label>
-                          <input type="number" min="5" defaultValue="10" className="login-input"/>
-                       </div>
-                       <div style={{display: 'flex', gap: '1rem', marginTop: '1.5rem'}}>
-                          <button type="submit" className="btn btn-primary">Submit Request</button>
-                          <button type="button" className="btn btn-guest" onClick={() => setIsBulkQuoteOpen(false)}>Cancel</button>
-                       </div>
-                    </form>
-                 )}
-              </div>
-           </div>
-        )}
-
-       </div>
-     )
-  }
-
-  // --- RENDER STOREFRONT (with filters) ---
-  return (
-    <div className="app-container">
-      <header className="fixed-header glass">
-        <div className="header-logo" onClick={goBackToStore} style={{cursor: 'pointer'}}>LUMINA WORKSPACE</div>
-        
-        <div className="header-actions">
-          <button className="btn btn-guest position-relative" style={{background: 'var(--primary)', color: '#FFF', border: 'none', marginRight: '0.5rem'}} onClick={() => setIsCartOpen(true)}>
-             Cart ({cart.reduce((a, b) => a + (b.quantity || 1), 0)})
-          </button>
-
-          <div className="user-display">
-            <div className="avatar">
-              {customerKey === 'new' ? 'G' : 'U'}
-            </div>
-            <div className="user-info-text">
-              <span className="user-name">
-                {customerKey === 'new' ? 'Guest Explorer' : `Customer #${customerKey}`}
-              </span>
-              <span className="user-role">
-                {customerKey === 'new' ? 'Cold-Start Guest' : 'Verified Buyer'}
-              </span>
-            </div>
-          </div>
-
-
-          <button onClick={handleLogout} className="logout-btn glass">Sign Out</button>
-        </div>
-      </header>
-
-      <div className="store-layout">
+      ) : (
+        <div className="store-layout">
         
         {/* LEFT FILTERS SIDEBAR */}
         <aside className="filters-sidebar glass">
@@ -709,34 +757,183 @@ function App() {
           {/* Tab 1: Recommendations Banner */}
           {!isAnyFilterActive && activeTab === 'recommendations' && (
             <section style={{ marginBottom: '4rem' }}>
-              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '2rem'}}>
+              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.5rem'}}>
                 <div className="section-title" style={{marginBottom: 0}}>
                   Personalized Workspace Recommendations
-                  {recType === 'switching_popularity_guest' && <span className="badge popularity">{selectedLocation ? 'Guest Switching (Popularity + Location)' : 'Trending Guest Picks (Popularity)'}</span>}
-                  {recType === 'weighted_hybrid' && <span className="badge svd">Weighted Hybrid (SVD + CF + Content + Location)</span>}
-                  {recType === 'weighted_hybrid_no_location' && <span className="badge svd">Weighted Hybrid (SVD + CF + Content)</span>}
+                  {recType === 'switching_popularity_guest' && <span className="badge popularity">{selectedLocation ? 'Guest Switching (Popularity + Location 5%)' : 'Trending Guest Picks (Popularity)'}</span>}
+                  {recType === 'weighted_hybrid' && <span className="badge svd">Weighted Hybrid (SVD + Item-CF + User-CF + Content + Loc 5%)</span>}
                 </div>
 
-                <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-                  <span style={{fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)'}}>📍 Location Context:</span>
-                  <select 
-                    className="login-input" 
-                    style={{padding: '0.4rem 0.8rem', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 'bold'}}
-                    value={selectedLocation} 
-                    onChange={e => setSelectedLocation(e.target.value)}
+                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap'}}>
+                  <button 
+                    className="btn btn-guest" 
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border-color)', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                    onClick={() => setIsWeightPanelOpen(!isWeightPanelOpen)}
                   >
-                    <option value="">All Locations (No Location Filter)</option>
-                    <option value="California">California (CA)</option>
-                    <option value="New York">New York (NY)</option>
-                    <option value="Texas">Texas (TX)</option>
-                    <option value="Florida">Florida (FL)</option>
-                    <option value="Washington">Washington (WA)</option>
-                    <option value="Illinois">Illinois (IL)</option>
-                    <option value="Ohio">Ohio (OH)</option>
-                    <option value="Georgia">Georgia (GA)</option>
-                  </select>
+                    <span>🎛️</span>
+                    <span>Tuning Weights & Models {isWeightPanelOpen ? '▲' : '▼'}</span>
+                  </button>
+
+                  <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+                    <span style={{fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)'}}>📍 Location:</span>
+                    <select 
+                      className="login-input" 
+                      style={{padding: '0.4rem 0.8rem', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 'bold'}}
+                      value={selectedLocation} 
+                      onChange={e => setSelectedLocation(e.target.value)}
+                    >
+                      <option value="">All Locations</option>
+                      <option value="California">California (CA)</option>
+                      <option value="New York">New York (NY)</option>
+                      <option value="Texas">Texas (TX)</option>
+                      <option value="Florida">Florida (FL)</option>
+                      <option value="Washington">Washington (WA)</option>
+                      <option value="Illinois">Illinois (IL)</option>
+                      <option value="Ohio">Ohio (OH)</option>
+                      <option value="Georgia">Georgia (GA)</option>
+                    </select>
+                  </div>
                 </div>
               </div>
+
+              {/* DYNAMIC HYBRID WEIGHT TUNING DRAWER (Executive Clean Design) */}
+              {isWeightPanelOpen && (
+                <div className="weight-tuning-panel mb-4 p-4" style={{ borderRadius: '16px', background: '#FFF', border: '1px solid var(--border-color)', boxShadow: '0 10px 30px rgba(111, 78, 55, 0.08)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
+                    <div>
+                      <h4 style={{ margin: 0, color: 'var(--primary)', fontFamily: 'var(--font-heading)', fontSize: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        🎛️ Hybrid Recommendation Model Tuning
+                      </h4>
+                      <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+                        Customize model influence in real-time. Adjusting sliders immediately re-ranks products based on your weighted preference vector.
+                      </p>
+                    </div>
+
+                    {/* Presets Row */}
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button 
+                        className={`preset-chip ${wSvd === 30 && wItemCf === 25 ? 'active' : ''}`} 
+                        onClick={() => { setWSvd(30); setWItemCf(25); setWUserCf(20); setWContent(20); setWLoc(5); }}
+                      >
+                        🎯 Balanced (Default)
+                      </button>
+                      <button 
+                        className={`preset-chip ${wItemCf === 75 ? 'active' : ''}`} 
+                        onClick={() => { setWSvd(0); setWItemCf(75); setWUserCf(10); setWContent(10); setWLoc(5); }}
+                      >
+                        🛒 Item-CF Focus
+                      </button>
+                      <button 
+                        className={`preset-chip ${wUserCf === 75 ? 'active' : ''}`} 
+                        onClick={() => { setWSvd(0); setWItemCf(10); setWUserCf(75); setWContent(10); setWLoc(5); }}
+                      >
+                        👥 User-CF Focus
+                      </button>
+                      <button 
+                        className={`preset-chip ${wSvd === 75 ? 'active' : ''}`} 
+                        onClick={() => { setWSvd(75); setWItemCf(10); setWUserCf(5); setWContent(5); setWLoc(5); }}
+                      >
+                        🧬 SVD Factor Focus
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* COLD START GUEST NOTICE vs HYBRID SLIDERS */}
+                  {customerKey === 'new' ? (
+                    <div style={{ background: 'rgba(201, 164, 76, 0.12)', border: '1px solid var(--accent)', borderRadius: '12px', padding: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <h4 style={{ margin: '0 0 0.4rem 0', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.1rem' }}>
+                          🔥 Cold-Start Mode Active: Popularity & Sales Volume Ranking
+                        </h4>
+                        <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--text-main)', lineHeight: '1.4' }}>
+                          Welcome, <strong>Guest Explorer</strong>! Because guest browsing has no prior transaction history, products are sorted strictly by overall sales volume (<strong>Rank #1, Rank #2, Rank #3...</strong>). Sign in to a verified customer profile to unlock custom SVD, Item-CF, and User-CF hybrid tuning sliders.
+                        </p>
+                      </div>
+                      <button 
+                        className="preset-chip active" 
+                        style={{ fontSize: '0.85rem', padding: '0.5rem 1.1rem', whiteSpace: 'nowrap', fontWeight: 'bold' }} 
+                        onClick={() => setCustomerKey('11000')}
+                      >
+                        👤 Try Customer #11000 Profile
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="sliders-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '1rem' }}>
+                      
+                      {/* SVD Slider Card */}
+                      <div className="slider-card" style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                          <span style={{ fontWeight: '700', fontSize: '0.9rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <span>🧬</span> SVD Latent
+                          </span>
+                          <span className="slider-val-badge" style={{ background: 'rgba(201, 164, 76, 0.15)', color: '#B38B2E', fontWeight: '800', fontSize: '0.8rem', padding: '0.15rem 0.5rem', borderRadius: '20px' }}>
+                            {wSvd}%
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>Matrix Factorization</div>
+                        <input type="range" min="0" max="100" value={wSvd} onChange={e => setWSvd(parseInt(e.target.value))} className="styled-slider svd-slider" />
+                      </div>
+
+                      {/* Item-CF Slider Card */}
+                      <div className="slider-card" style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                          <span style={{ fontWeight: '700', fontSize: '0.9rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <span>🛒</span> Item-Based CF
+                          </span>
+                          <span className="slider-val-badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#059669', fontWeight: '800', fontSize: '0.8rem', padding: '0.15rem 0.5rem', borderRadius: '20px' }}>
+                            {wItemCf}%
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>Co-Purchase Matrix (Rᵀ)</div>
+                        <input type="range" min="0" max="100" value={wItemCf} onChange={e => setWItemCf(parseInt(e.target.value))} className="styled-slider item-cf-slider" />
+                      </div>
+
+                      {/* User-CF Slider Card */}
+                      <div className="slider-card" style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                          <span style={{ fontWeight: '700', fontSize: '0.9rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <span>👥</span> User-Based CF
+                          </span>
+                          <span className="slider-val-badge" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#2563EB', fontWeight: '800', fontSize: '0.8rem', padding: '0.15rem 0.5rem', borderRadius: '20px' }}>
+                            {wUserCf}%
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>Peer Customer Similarity</div>
+                        <input type="range" min="0" max="100" value={wUserCf} onChange={e => setWUserCf(parseInt(e.target.value))} className="styled-slider user-cf-slider" />
+                      </div>
+
+                      {/* Content-Based Slider Card */}
+                      <div className="slider-card" style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                          <span style={{ fontWeight: '700', fontSize: '0.9rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <span>📐</span> Content & Style
+                          </span>
+                          <span className="slider-val-badge" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#D97706', fontWeight: '800', fontSize: '0.8rem', padding: '0.15rem 0.5rem', borderRadius: '20px' }}>
+                            {wContent}%
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>Material & Category Fit</div>
+                        <input type="range" min="0" max="100" value={wContent} onChange={e => setWContent(parseInt(e.target.value))} className="styled-slider content-slider" />
+                      </div>
+
+                      {/* Location Slider Card */}
+                      <div className="slider-card" style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                          <span style={{ fontWeight: '700', fontSize: '0.9rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <span>📍</span> Location
+                          </span>
+                          <span className="slider-val-badge" style={{ background: 'rgba(236, 72, 153, 0.15)', color: '#DB2777', fontWeight: '800', fontSize: '0.8rem', padding: '0.15rem 0.5rem', borderRadius: '20px' }}>
+                            {wLoc}%
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>Regional Affinity (5% Base)</div>
+                        <input type="range" min="0" max="100" value={wLoc} onChange={e => setWLoc(parseInt(e.target.value))} className="styled-slider loc-slider" />
+                      </div>
+
+                    </div>
+                  )}
+                </div>
+              )}
 
               
               {recommendations.length === 0 ? (
@@ -745,10 +942,41 @@ function App() {
                 <div className="product-grid">
                   {sortedRecommendations.map((item, idx) => {
                     const isWish = wishlist.includes(item.ProductKey);
+                    const driver = getDriverBadge(item);
+                    const matchPct = Math.round((item.score || item.hybrid_score || 0) * 100);
+
                     return (
                     <div key={"rec-"+idx} className="product-card glass" onClick={() => viewProductDetails(item)}>
                       <div className="image-container">
                         <div className="category-overlay">{item.SubcategoryName}</div>
+                        
+                        {/* Score & Driver Tag Overlay */}
+                        <div className="rec-score-pill-container" style={{ position: 'absolute', bottom: '8px', left: '8px', display: 'flex', gap: '4px', zIndex: 3, flexWrap: 'wrap' }}>
+                          {customerKey === 'new' ? (
+                            <>
+                              <span className="match-score-badge" style={{ background: '#C9A44C', color: '#FFF', fontWeight: 'bold', fontSize: '0.75rem', padding: '0.2rem 0.5rem', borderRadius: '4px', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}>
+                                🔥 Rank #{item.salesRank || (idx + 1)} in Sales
+                              </span>
+                              {(item.total_quantity || item.totalQuantity) && (
+                                <span className="driver-badge" style={{ background: 'rgba(15,23,42,0.85)', color: '#FFF', fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                  <span>📦</span>
+                                  <span>{(item.total_quantity || item.totalQuantity).toLocaleString()} Sold</span>
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <span className="match-score-badge" style={{ background: 'rgba(0,0,0,0.8)', color: '#10B981', fontWeight: 'bold', fontSize: '0.75rem', padding: '0.2rem 0.5rem', borderRadius: '4px', backdropFilter: 'blur(4px)' }}>
+                                {matchPct > 0 ? `${matchPct}% Match` : 'Popular'}
+                              </span>
+                              <span className={`driver-badge ${driver.cls}`} style={{ background: 'rgba(15,23,42,0.85)', color: '#FFF', fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                <span>{driver.icon}</span>
+                                <span>{driver.label}</span>
+                              </span>
+                            </>
+                          )}
+                        </div>
+
                         <button className="wishlist-btn-corner" onClick={(e) => toggleWishlist(e, item.ProductKey)}>
                            {isWish ? '♥' : '♡'}
                         </button>
@@ -760,12 +988,18 @@ function App() {
                       </div>
                       <div className="product-info">
                         <div className="product-name">{item.ProductName}</div>
-                        {(item.total_quantity || item.sales_count) && (
-                          <div style={{fontSize: '0.8rem', color: '#D97706', fontWeight: '700', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.3rem'}}>
-                            <span>🔥</span>
-                            <span>{item.total_quantity ? `${item.total_quantity.toLocaleString()} units sold` : `${item.sales_count} orders`}</span>
-                          </div>
-                        )}
+                        
+                        {/* Inspect Score Breakdown Link */}
+                        <div style={{ margin: '0.3rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <button 
+                            className="btn-link" 
+                            style={{ fontSize: '0.75rem', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                            onClick={(e) => { e.stopPropagation(); setInspectedProduct(item); }}
+                          >
+                            🔍 Why Recommended? (Inspect Breakdown)
+                          </button>
+                        </div>
+
                         <div className="product-footer">
                           <div>
                              <span className="price">${parseFloat(item.UnitPrice).toFixed(2)}</span>
@@ -781,6 +1015,131 @@ function App() {
                 </div>
               )}
             </section>
+          )}
+
+          {/* INSPECTED RECOMMENDATION BREAKDOWN MODAL (Executive Clean Theme) */}
+          {inspectedProduct && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(6px)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }} onClick={() => setInspectedProduct(null)}>
+              <div style={{ background: '#FFF', color: 'var(--text-main)', borderRadius: '16px', border: '1px solid var(--border-color)', boxShadow: '0 25px 60px rgba(0, 0, 0, 0.25)', width: '100%', maxWidth: '540px', padding: '1.5rem', maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+                  <div>
+                    <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--accent)', fontWeight: '700' }}>Algorithmic Score Breakdown</span>
+                    <h3 style={{ margin: '0.2rem 0 0 0', color: 'var(--primary)', fontFamily: 'var(--font-heading)', fontSize: '1.35rem' }}>{inspectedProduct.ProductName}</h3>
+                  </div>
+                  <button className="btn btn-guest" style={{ padding: '0.2rem 0.5rem', fontSize: '0.85rem', width: 'auto' }} onClick={() => setInspectedProduct(null)}>✕</button>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1.25rem', background: 'var(--bg-main)', padding: '0.85rem', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                  <img src={inspectedProduct.image} alt={inspectedProduct.ProductName} style={{ width: '64px', height: '64px', objectFit: 'cover', borderRadius: '8px' }} />
+                  <div>
+                    {customerKey === 'new' ? (
+                      <div style={{ fontSize: '1.25rem', fontWeight: '800', color: '#C9A44C' }}>
+                        🔥 Rank #{inspectedProduct.salesRank || 1} in Sales
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '1.25rem', fontWeight: '800', color: '#059669' }}>
+                        {Math.round((inspectedProduct.score || inspectedProduct.hybrid_score || 0) * 100)}% Overall Match Score
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      Category: {inspectedProduct.CategoryName} ({inspectedProduct.SubcategoryName})
+                    </div>
+                  </div>
+                </div>
+
+                <h4 style={{ fontSize: '0.8rem', letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: '1rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.4rem', fontWeight: '700' }}>
+                  {customerKey === 'new' ? 'Cold-Start Popularity Breakdown' : 'Model Weight & Contribution Breakdown'}
+                </h4>
+
+                {customerKey === 'new' ? (
+                  <div style={{ background: 'var(--bg-main)', padding: '1.1rem', borderRadius: '12px', border: '1px solid var(--border-color)', fontSize: '0.88rem', color: 'var(--text-main)', lineHeight: '1.5' }}>
+                    <p style={{ margin: '0 0 0.4rem 0' }}>
+                      <strong>Why is this recommended?</strong>
+                    </p>
+                    <p style={{ margin: '0 0 1rem 0', color: 'var(--text-muted)' }}>
+                      This item is ranked <strong>#{inspectedProduct.salesRank || 1}</strong> in overall sales volume across all Lumina Workspace buyers. As a guest user with no prior purchase history, Lumina Recommender uses <strong>Popularity-Based Ranking</strong> to highlight top marketplace essentials.
+                    </p>
+                    
+                    {/* Sales Metrics Cards */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', background: '#FFF', padding: '0.85rem 1rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                      <div>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: '700' }}>📊 Total Sales Volume</span>
+                        <div style={{ fontSize: '1.2rem', fontWeight: '800', color: 'var(--primary)', marginTop: '0.15rem' }}>
+                          {(inspectedProduct.total_quantity || inspectedProduct.totalQuantity || 0).toLocaleString()} <span style={{ fontSize: '0.8rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>units</span>
+                        </div>
+                      </div>
+                      <div>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: '700' }}>🛒 Order Frequency</span>
+                        <div style={{ fontSize: '1.2rem', fontWeight: '800', color: '#059669', marginTop: '0.15rem' }}>
+                          {(inspectedProduct.sales_count || inspectedProduct.salesCount || 0).toLocaleString()} <span style={{ fontSize: '0.8rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>orders</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', fontSize: '0.85rem' }}>
+                    {/* SVD */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>🧬 SVD Latent Preference Vector:</span>
+                        <strong style={{ color: '#B38B2E' }}>{Math.round((inspectedProduct.svdScore || 0) * 100)}% <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(Weight: {wSvd}%)</span></strong>
+                      </div>
+                      <div style={{ height: '8px', background: 'var(--bg-section)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.round((inspectedProduct.svdScore || 0) * 100)}%`, background: 'var(--accent)', borderRadius: '4px' }} />
+                      </div>
+                    </div>
+
+                    {/* Item-CF */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>🛒 Item-Based CF (Rᵀ Co-Purchase):</span>
+                        <strong style={{ color: '#059669' }}>{Math.round((inspectedProduct.itemCfScore || 0) * 100)}% <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(Weight: {wItemCf}%)</span></strong>
+                      </div>
+                      <div style={{ height: '8px', background: 'var(--bg-section)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.round((inspectedProduct.itemCfScore || 0) * 100)}%`, background: '#10B981', borderRadius: '4px' }} />
+                      </div>
+                    </div>
+
+                    {/* User-CF */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>👥 User-Based CF (Peer Sim):</span>
+                        <strong style={{ color: '#2563EB' }}>{Math.round((inspectedProduct.userCfScore || 0) * 100)}% <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(Weight: {wUserCf}%)</span></strong>
+                      </div>
+                      <div style={{ height: '8px', background: 'var(--bg-section)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.round((inspectedProduct.userCfScore || 0) * 100)}%`, background: '#3B82F6', borderRadius: '4px' }} />
+                      </div>
+                    </div>
+
+                    {/* Content-Based */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>📐 Content & Style Similarity:</span>
+                        <strong style={{ color: '#D97706' }}>{Math.round((inspectedProduct.contentScore || 0) * 100)}% <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(Weight: {wContent}%)</span></strong>
+                      </div>
+                      <div style={{ height: '8px', background: 'var(--bg-section)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.round((inspectedProduct.contentScore || 0) * 100)}%`, background: '#F59E0B', borderRadius: '4px' }} />
+                      </div>
+                    </div>
+
+                    {/* Location-Aware */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                        <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>📍 Location / Regional Affinity:</span>
+                        <strong style={{ color: '#DB2777' }}>{Math.round((inspectedProduct.locScore || 0) * 100)}% <span style={{ fontWeight: 'normal', color: 'var(--text-muted)' }}>(Weight: {wLoc}%)</span></strong>
+                      </div>
+                      <div style={{ height: '8px', background: 'var(--bg-section)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.round((inspectedProduct.locScore || 0) * 100)}%`, background: '#EC4899', borderRadius: '4px' }} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'flex-end' }}>
+                  <button className="btn btn-primary" style={{ padding: '0.6rem 1.5rem', fontSize: '0.9rem', width: 'auto' }} onClick={() => setInspectedProduct(null)}>Close Inspection</button>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Tab 2: Purchase History Banner */}
@@ -889,6 +1248,7 @@ function App() {
           </section>
         </main>
       </div>
+      )}
       
       {/* Footer */}
       <footer className="site-footer">
@@ -993,19 +1353,28 @@ function App() {
                       {fbtLoading ? (
                         <div className="loading">Processing recommendations...</div>
                       ) : (
-                        <div style={{display: 'flex', flexDirection: 'column'}}>
-                          {fbtItems.map((fbt, idx) => (
-                            <div key={'fbt-'+idx} className="cart-fbt-card" onClick={() => { setIsCartOpen(false); viewProductDetails(fbt); }}>
-                              <img src={fbt.image || `https://picsum.photos/seed/${fbt.ProductKey}/100/100`} className="cart-fbt-img" alt={fbt.ProductName} />
-                              <div style={{display: 'flex', flexDirection: 'column', justifyContent: 'center', width: '100%'}}>
-                                <div style={{fontSize: '0.85rem', fontWeight: 600}}>{fbt.ProductName}</div>
-                                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.4rem'}}>
-                                  <span style={{fontWeight: 700, color: 'var(--primary)'}}>${parseFloat(fbt.UnitPrice).toFixed(2)}</span>
-                                  <button className="btn btn-guest" style={{padding: '0.2rem 0.5rem', fontSize: '0.75rem'}} onClick={(e) => handleAddToCart(e, fbt)}>+ Add</button>
+                        <div style={{display: 'flex', flexDirection: 'column', gap: '0.75rem'}}>
+                          {fbtItems.map((fbt, idx) => {
+                            const fbtScore = fbt.similarity || fbt.similarityScore || fbt.score || fbt.hybrid_score || 0.88;
+                            const fbtPct = Math.round(fbtScore * 100);
+                            return (
+                              <div key={'fbt-'+idx} className="cart-fbt-card" onClick={() => { setIsCartOpen(false); viewProductDetails(fbt); }}>
+                                <img src={fbt.image || `https://picsum.photos/seed/${fbt.ProductKey}/100/100`} className="cart-fbt-img" alt={fbt.ProductName} />
+                                <div style={{display: 'flex', flexDirection: 'column', justifyContent: 'center', width: '100%'}}>
+                                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem'}}>
+                                    <span style={{fontSize: '0.85rem', fontWeight: 600, flex: 1}}>{fbt.ProductName}</span>
+                                    <span style={{ fontSize: '0.72rem', background: 'rgba(16, 185, 129, 0.15)', color: '#059669', fontWeight: '800', padding: '0.15rem 0.45rem', borderRadius: '12px', whiteSpace: 'nowrap' }}>
+                                      🛒 {fbtPct}% Match
+                                    </span>
+                                  </div>
+                                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.4rem'}}>
+                                    <span style={{fontWeight: 700, color: 'var(--primary)'}}>${parseFloat(fbt.UnitPrice).toFixed(2)}</span>
+                                    <button className="btn btn-guest" style={{padding: '0.2rem 0.5rem', fontSize: '0.75rem'}} onClick={(e) => handleAddToCart(e, fbt)}>+ Add</button>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
